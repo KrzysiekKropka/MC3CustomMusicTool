@@ -18,6 +18,7 @@
 
 1.  Place STREAMS.DAT and ASSETS.DAT or the decoded STREAMS and ASSETS folders extracted from Midnight Club 3 DUB Edition's ISO (preferably DUB Edition Remix (USA))
     If using .DAT files, run the script first to decode them.
+    Make sure they don't have any non-ASCII characters! E.g. ć,ż,ą.
 
 2.  Place new music files in STREAMS/Music/[genre] with the format [Artist] - [Song].[ext] 
     The files must be in some normal audio format, like WAV, FLAC or MP3. RSMs will be ignored.

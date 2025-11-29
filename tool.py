@@ -350,11 +350,11 @@ def main():
             if answer != "y":
                 return
     if not os.path.exists(MUSIC_FOLDER) or not os.path.exists(PLAY_FOLDER) or not os.path.exists(STRTBL_FOLDER):
-        print(f"\n{RED}Ain't shit to change! I need STREAMS and ASSETS. Either add them already decoded or in .DAT format.")
+        print(f"\n{RED}There ain't shit to change! I need STREAMS and ASSETS. Either add them already decoded or in .DAT format.")
         return
     convert_strtbl_to_json()
     song_dict2, song_dict8 = load_song_dicts()
-    answer = input(f"\n{BLUE}Now is the time to add new songs to STREAMS/Music/[genre].{RESET}\nThe file format must be [Artist] - [Name].[ext]. Write REAL BIG once you're ready: ").strip().lower()
+    answer = input(f"\n{BLUE}Now is the time to add new songs to STREAMS/Music/[genre]. Make sure they don't have any non-ASCII characters {RESET}\nThe file format must be [Artist] - [Name].[ext]. Write REAL BIG once you're ready: ").strip().lower()
     if answer == "real big": 
         if list_new_songs() != 0:
             answer = input(f"\n{BLUE}Is the list of all new songs complete?{RESET}\nWrite DICK REAL BIG once you're ready: ").strip().lower()
