@@ -20,7 +20,7 @@ STRTBL4_JSON = os.path.join(STRTBL_FOLDER, "mcstrings04.json")
 STRTBL8_FILE = os.path.join(STRTBL_FOLDER, "mcstrings08.strtbl")
 STRTBL8_JSON = os.path.join(STRTBL_FOLDER, "mcstrings08.json")
 
-MAX_NAME_LENGTH = 63
+MAX_NAME_LENGTH = 31
 
 RED = "\033[31m"
 GREEN = "\033[32m"
