@@ -13,8 +13,14 @@ STRTBL_FOLDER = os.path.join(BASE_FOLDER, "ASSETS", "fonts")
 SD_PLAY_FILE = os.path.join(PLAY_FOLDER, "sd.play")
 STRTBL2_FILE = os.path.join(STRTBL_FOLDER, "mcstrings02.strtbl")
 STRTBL2_JSON = os.path.join(STRTBL_FOLDER, "mcstrings02.json")
+STRTBL1_FILE = os.path.join(STRTBL_FOLDER, "mcstrings01.strtbl")
+STRTBL1_JSON = os.path.join(STRTBL_FOLDER, "mcstrings01.json")
+STRTBL4_FILE = os.path.join(STRTBL_FOLDER, "mcstrings04.strtbl")
+STRTBL4_JSON = os.path.join(STRTBL_FOLDER, "mcstrings04.json")
 STRTBL8_FILE = os.path.join(STRTBL_FOLDER, "mcstrings08.strtbl")
 STRTBL8_JSON = os.path.join(STRTBL_FOLDER, "mcstrings08.json")
+
+MAX_NAME_LENGTH = 63
 
 RED = "\033[31m"
 GREEN = "\033[32m"
@@ -46,6 +52,29 @@ LANGUAGE_TEXTS = ["by", "de", "par", "von", "di", "by"]
 
 FONT_TEMPLATE = {"name": "smallspace", "scale32": [1.0, 1.0], "scale8": [0, 0], "size": 15}
 
+
+def sanitize_ascii_name(value, label):
+    ascii_value = value.encode("ascii", "ignore").decode("ascii").strip()
+    ascii_value = re.sub(r"\s+", " ", ascii_value)
+
+    if not ascii_value:
+        raise ValueError(f"{label} becomes empty after removing non-ASCII characters.")
+
+    if len(ascii_value) > MAX_NAME_LENGTH:
+        ascii_value = ascii_value[:MAX_NAME_LENGTH].rstrip()
+
+    if not ascii_value:
+        raise ValueError(f"{label} is empty after truncation.")
+
+    return ascii_value
+
+
+def sanitize_song_metadata(artist, song, clean_artist):
+    safe_song = sanitize_ascii_name(song, "Song name")
+    safe_artist = sanitize_ascii_name(artist, "Artist name")
+    safe_clean_artist = sanitize_ascii_name(clean_artist, "Artist name")
+    return safe_artist, safe_song, safe_clean_artist
+
 # === 1. Decompile existing DAT files ===
 def decompile_dat_files():
     if os.path.exists(os.path.join(BASE_FOLDER, "ASSETS.DAT")):
@@ -59,10 +88,20 @@ def decompile_dat_files():
 
 # === 2. Convert STRTBL to JSON ===
 def convert_strtbl_to_json():
+    if os.path.exists(STRTBL1_FILE) and not os.path.exists(STRTBL1_JSON):
+        print(f"{YELLOW}Converting mcstrings01.strtbl → mcstrings01.json{RESET}")
+        subprocess.run(["python", os.path.join(TOOLS_FOLDER, "strtbl.py"), "dec", STRTBL1_FILE], check=True)
+        os.remove(STRTBL1_FILE)
+
     if os.path.exists(STRTBL2_FILE) and not os.path.exists(STRTBL2_JSON):
         print(f"{YELLOW}Converting mcstrings02.strtbl → mcstrings02.json{RESET}")
         subprocess.run(["python", os.path.join(TOOLS_FOLDER, "strtbl.py"), "dec", STRTBL2_FILE], check=True)
         os.remove(STRTBL2_FILE)
+
+    if os.path.exists(STRTBL4_FILE) and not os.path.exists(STRTBL4_JSON):
+        print(f"{YELLOW}Converting mcstrings04.strtbl → mcstrings04.json{RESET}")
+        subprocess.run(["python", os.path.join(TOOLS_FOLDER, "strtbl.py"), "dec", STRTBL4_FILE], check=True)
+        os.remove(STRTBL4_FILE)
 
     if os.path.exists(STRTBL8_FILE) and not os.path.exists(STRTBL8_JSON):
         print(f"{YELLOW}Converting mcstrings08.strtbl → mcstrings08.json{RESET}")
@@ -72,17 +111,25 @@ def convert_strtbl_to_json():
 
 # === 3. Load existing JSON (songs text entries) <- no the fuck they ain't just that but okay ===
 def load_song_dicts():
-    song_dict2, song_dict8 = {}, {}
+    song_dict1, song_dict2, song_dict4, song_dict8 = {}, {}, {}, {}
+
+    if os.path.exists(STRTBL1_JSON):
+        with open(STRTBL1_JSON, "r", encoding="utf-8") as f:
+            song_dict1 = json.load(f)
 
     if os.path.exists(STRTBL2_JSON):
         with open(STRTBL2_JSON, "r", encoding="utf-8") as f:
             song_dict2 = json.load(f)
 
+    if os.path.exists(STRTBL4_JSON):
+        with open(STRTBL4_JSON, "r", encoding="utf-8") as f:
+            song_dict4 = json.load(f)
+
     if os.path.exists(STRTBL8_JSON):
         with open(STRTBL8_JSON, "r", encoding="utf-8") as f:
             song_dict8 = json.load(f)
 
-    return song_dict2, song_dict8
+    return song_dict1, song_dict2, song_dict4, song_dict8
 
 # === A name splitting helper function, also takes (feat.) from song titles and adds it to artist ===
 def name_splitting(name):
@@ -127,7 +174,7 @@ def list_new_songs():
     return(number)
 
 # === 5. Process songs in STREAMS/Music ===
-def process_music_files(song_dict2, song_dict8):
+def process_music_files(song_dicts):
     new_sdplay_songs = [] # "music\\HipHop\\Artist1_Song1", "music\\Rock\\Artist2_Song2", etc.
     genre_songs = {} # "Rock": ["music\\Rock\\Artist2_Song2", "music\\Rock\\Artist3_Song3"], "HipHop": [music\\HipHop\\Artist1_Song1, music\\HipHop\\Artist4_Song4]
     existing_sdplay_songs = set()
@@ -153,28 +200,34 @@ def process_music_files(song_dict2, song_dict8):
                 continue
 
             artist, song, clean_artist = name_splitting(name)
+            try:
+                artist, song, clean_artist = sanitize_song_metadata(artist, song, clean_artist)
+            except ValueError as error:
+                print(f"{YELLOW}Skipping {filename}: {error}{RESET}")
+                continue
 
             # Names with no spaces
             artist_nospace = re.sub(r"[^\w]", "", clean_artist) 
             song_nospace = re.sub(r"[^\w]", "", song)
+
+            if not artist_nospace or not song_nospace:
+                print(f"{YELLOW}Skipping {filename}: ASCII-safe artist/song id became empty.{RESET}")
+                continue
             
             json_key = f"music_{genre}_{artist_nospace}_{song_nospace}"
 
-            # For some dumb fucking reason, instrumentals use mcstrings08 instead of 02 like other songs
-            target_dict = song_dict8 if genre.lower() == "instrumental" else song_dict2
+            for entry in song_dicts.values():
+                target_dict = entry["data"]
+                if "data" not in target_dict:
+                    target_dict["data"] = {}
 
-            # ChatGPT is a pussy
-            if "data" not in target_dict:
-                target_dict["data"] = {}
-
-            # Adds that song to either mcstrings02 or 08
-            if json_key not in target_dict["data"]:
-                target_dict["data"][json_key] = {}
-                for lang, text_prefix in zip(LANGUAGES, LANGUAGE_TEXTS):
-                    target_dict["data"][json_key][lang] = {
-                        "text": f"\"{song}\"\n{text_prefix} {artist}",
-                        "font": FONT_TEMPLATE
-                    }
+                if json_key not in target_dict["data"]:
+                    target_dict["data"][json_key] = {}
+                    for lang, text_prefix in zip(LANGUAGES, LANGUAGE_TEXTS):
+                        target_dict["data"][json_key][lang] = {
+                            "text": f"\"{song}\"\n{text_prefix} {artist}",
+                            "font": FONT_TEMPLATE
+                        }
 
             # Playlist format of songs, for some reason they use backslashes
             sdplay_song = f"music\\{genre}\\{artist_nospace}_{song_nospace}"
@@ -187,10 +240,10 @@ def process_music_files(song_dict2, song_dict8):
 
             genre_songs.setdefault(genre, []).append(sdplay_song)
 
-    return song_dict2, song_dict8, new_sdplay_songs, genre_songs
+    return song_dicts, new_sdplay_songs, genre_songs
 
 # === 6. Update sd.play and per-genre race files ===
-def update_playlists(new_sdplay_songs, genre_songs, song_dict2, song_dict8):
+def update_playlists(new_sdplay_songs, genre_songs, song_dicts):
     # sd.play
     sd_play_lines = []
     if os.path.exists(SD_PLAY_FILE):
@@ -250,19 +303,29 @@ def update_playlists(new_sdplay_songs, genre_songs, song_dict2, song_dict8):
                     f.write(line + "\n")
 
     # update JSON
-    with open(STRTBL2_JSON, "w", encoding="utf-8") as f:
-        json.dump(song_dict2, f, ensure_ascii=False, indent=4)
-        
-    with open(STRTBL8_JSON, "w", encoding="utf-8") as f:
-        json.dump(song_dict8, f, ensure_ascii=False, indent=4)
+    for entry in song_dicts.values():
+        json_path = entry["json_path"]
+        song_dict = entry["data"]
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(song_dict, f, ensure_ascii=True, indent=4)
 
 
 # === 7. Convert json to strtbl ===
 def convert_json_to_strtbl():
+    if os.path.exists(STRTBL1_JSON):
+        print(f"{YELLOW}Converting mcstrings01.json → mcstrings01.strtbl{RESET}")
+        subprocess.run(["python", os.path.join(TOOLS_FOLDER, "strtbl.py"), "enc", STRTBL1_JSON], check=True)
+        os.remove(STRTBL1_JSON)
+
     if os.path.exists(STRTBL2_JSON):
         print(f"{YELLOW}Converting mcstrings02.json → mcstrings02.strtbl{RESET}")
         subprocess.run(["python", os.path.join(TOOLS_FOLDER, "strtbl.py"), "enc", STRTBL2_JSON], check=True)
         os.remove(STRTBL2_JSON)
+
+    if os.path.exists(STRTBL4_JSON):
+        print(f"{YELLOW}Converting mcstrings04.json → mcstrings04.strtbl{RESET}")
+        subprocess.run(["python", os.path.join(TOOLS_FOLDER, "strtbl.py"), "enc", STRTBL4_JSON], check=True)
+        os.remove(STRTBL4_JSON)
 
     if os.path.exists(STRTBL8_JSON):
         print(f"{YELLOW}Converting mcstrings08.json → mcstrings08.strtbl{RESET}")
@@ -285,11 +348,20 @@ def build_rstm_files():
 
             if " - " in name:
                 artist, song, clean_artist = name_splitting(name)
+                try:
+                    artist, song, clean_artist = sanitize_song_metadata(artist, song, clean_artist)
+                except ValueError as error:
+                    print(f"{YELLOW}Skipping RSTM build for {filename}: {error}{RESET}")
+                    continue
                 artist_nospace = re.sub(r"[^\w]", "", clean_artist)
                 song_nospace = re.sub(r"[^\w]", "", song)
+
+                if not artist_nospace or not song_nospace:
+                    print(f"{YELLOW}Skipping RSTM build for {filename}: ASCII-safe artist/song id became empty.{RESET}")
+                    continue
                 artist_song = f"{artist_nospace}_{song_nospace}"
             else:
-                artist_song = name
+                artist_song = sanitize_ascii_name(name, "File name")
 
             wav_path = os.path.join(genre_path, f"{artist_song}.wav")
             original_file = None
@@ -331,9 +403,9 @@ def compile_back():
     subprocess.run(["python", os.path.join(TOOLS_FOLDER, "hash_build.py"), "B", "STREAMS", "STREAMS.DAT", "-a", "MClub"], check=True)
 
 # === 10. Final step ===
-def finalStep(song_dict2, song_dict8):
-    song_dict2, song_dict8, new_sdplay_songs, genre_songs = process_music_files(song_dict2, song_dict8)
-    update_playlists(new_sdplay_songs, genre_songs, song_dict2, song_dict8)
+def finalStep(song_dicts):
+    song_dicts, new_sdplay_songs, genre_songs = process_music_files(song_dicts)
+    update_playlists(new_sdplay_songs, genre_songs, song_dicts)
     convert_json_to_strtbl()
     build_rstm_files()
 
@@ -353,17 +425,23 @@ def main():
         print(f"\n{RED}There ain't shit to change! I need STREAMS and ASSETS. Either add them already decoded or in .DAT format.")
         return
     convert_strtbl_to_json()
-    song_dict2, song_dict8 = load_song_dicts()
+    song_dict1, song_dict2, song_dict4, song_dict8 = load_song_dicts()
+    song_dicts = {
+        "mcstrings01": {"json_path": STRTBL1_JSON, "data": song_dict1},
+        "mcstrings02": {"json_path": STRTBL2_JSON, "data": song_dict2},
+        "mcstrings04": {"json_path": STRTBL4_JSON, "data": song_dict4},
+        "mcstrings08": {"json_path": STRTBL8_JSON, "data": song_dict8},
+    }
     answer = input(f"\n{BLUE}Now is the time to add new songs to STREAMS/Music/[genre]. Make sure they don't have any non-ASCII characters {RESET}\nThe file format must be [Artist] - [Name].[ext]. Write REAL BIG once you're ready: ").strip().lower()
     if answer == "real big": 
         if list_new_songs() != 0:
             answer = input(f"\n{BLUE}Is the list of all new songs complete?{RESET}\nWrite DICK REAL BIG once you're ready: ").strip().lower()
             if answer == "dick real big": 
-                finalStep(song_dict2, song_dict8)
+                finalStep(song_dicts)
         else:
             answer = input(f"\n{BLUE}The script didn't find any new songs with format [artist] - [song].[ext].{RESET}\nDo you still want to continue? Write DICK REAL SMALL once you're ready: ").strip().lower()
             if answer == "dick real small": 
-                finalStep(song_dict2, song_dict8)
+                finalStep(song_dicts)
 
 
 if __name__ == "__main__":
