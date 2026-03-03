@@ -75,6 +75,36 @@ def sanitize_song_metadata(artist, song, clean_artist):
     safe_clean_artist = sanitize_ascii_name(clean_artist, "Artist name")
     return safe_artist, safe_song, safe_clean_artist
 
+
+def make_song_id(clean_artist, song):
+    artist_nospace = re.sub(r"[^\w]", "", clean_artist)
+    song_nospace = re.sub(r"[^\w]", "", song)
+
+    if not artist_nospace or not song_nospace:
+        return "", ""
+
+    max_total = MAX_NAME_LENGTH
+    separator = "_"
+    total_len = len(artist_nospace) + len(separator) + len(song_nospace)
+
+    if total_len <= max_total:
+        return artist_nospace, song_nospace
+
+    allowed_artist = max(1, min(len(artist_nospace), max_total - len(separator) - 1))
+    allowed_song = max_total - len(separator) - allowed_artist
+
+    if allowed_song < 1:
+        allowed_song = 1
+        allowed_artist = max_total - len(separator) - allowed_song
+
+    if len(song_nospace) > allowed_song:
+        song_nospace = song_nospace[:allowed_song]
+
+    if len(artist_nospace) > allowed_artist:
+        artist_nospace = artist_nospace[:allowed_artist]
+
+    return artist_nospace, song_nospace
+
 # === 1. Decompile existing DAT files ===
 def decompile_dat_files():
     if os.path.exists(os.path.join(BASE_FOLDER, "ASSETS.DAT")):
@@ -206,15 +236,14 @@ def process_music_files(song_dicts):
                 print(f"{YELLOW}Skipping {filename}: {error}{RESET}")
                 continue
 
-            # Names with no spaces
-            artist_nospace = re.sub(r"[^\w]", "", clean_artist) 
-            song_nospace = re.sub(r"[^\w]", "", song)
+            artist_nospace, song_nospace = make_song_id(clean_artist, song)
 
             if not artist_nospace or not song_nospace:
                 print(f"{YELLOW}Skipping {filename}: ASCII-safe artist/song id became empty.{RESET}")
                 continue
-            
-            json_key = f"music_{genre}_{artist_nospace}_{song_nospace}"
+
+            song_id = f"{artist_nospace}_{song_nospace}"
+            json_key = f"music_{genre}_{song_id}"
 
             for entry in song_dicts.values():
                 target_dict = entry["data"]
@@ -230,7 +259,7 @@ def process_music_files(song_dicts):
                         }
 
             # Playlist format of songs, for some reason they use backslashes
-            sdplay_song = f"music\\{genre}\\{artist_nospace}_{song_nospace}"
+            sdplay_song = f"music\\{genre}\\{song_id}"
 
             # Only add to sd.play if NOT instrumental
             if genre.lower() != "instrumental":
@@ -353,15 +382,17 @@ def build_rstm_files():
                 except ValueError as error:
                     print(f"{YELLOW}Skipping RSTM build for {filename}: {error}{RESET}")
                     continue
-                artist_nospace = re.sub(r"[^\w]", "", clean_artist)
-                song_nospace = re.sub(r"[^\w]", "", song)
+                artist_nospace, song_nospace = make_song_id(clean_artist, song)
 
                 if not artist_nospace or not song_nospace:
                     print(f"{YELLOW}Skipping RSTM build for {filename}: ASCII-safe artist/song id became empty.{RESET}")
                     continue
                 artist_song = f"{artist_nospace}_{song_nospace}"
             else:
-                artist_song = sanitize_ascii_name(name, "File name")
+                artist_song = re.sub(r"[^\w]", "", sanitize_ascii_name(name, "File name"))[:MAX_NAME_LENGTH]
+                if not artist_song:
+                    print(f"{YELLOW}Skipping RSTM build for {filename}: ASCII-safe file name became empty.{RESET}")
+                    continue
 
             wav_path = os.path.join(genre_path, f"{artist_song}.wav")
             original_file = None
