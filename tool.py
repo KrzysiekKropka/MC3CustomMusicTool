@@ -52,7 +52,6 @@ LANGUAGE_TEXTS = ["by", "de", "par", "von", "di", "by"]
 
 FONT_TEMPLATE = {"name": "smallspace", "scale32": [1.0, 1.0], "scale8": [0, 0], "size": 15}
 
-
 def sanitize_ascii_name(value, label):
     ascii_value = value.encode("ascii", "ignore").decode("ascii").strip()
     ascii_value = re.sub(r"\s+", " ", ascii_value)
@@ -65,13 +64,11 @@ def sanitize_ascii_name(value, label):
 
     return ascii_value
 
-
 def sanitize_song_metadata(artist, song, clean_artist):
     safe_song = sanitize_ascii_name(song, "Song name")
     safe_artist = sanitize_ascii_name(artist, "Artist name")
     safe_clean_artist = sanitize_ascii_name(clean_artist, "Artist name")
     return safe_artist, safe_song, safe_clean_artist
-
 
 def make_song_id(clean_artist, song):
     artist_nospace = re.sub(r"[^\w]", "", clean_artist)
@@ -112,7 +109,6 @@ def decompile_dat_files():
         print(f"{YELLOW}Decompiling STREAMS.DAT...{RESET}")
         subprocess.run(["python", os.path.join(TOOLS_FOLDER, "hash_build.py"), "X", "STREAMS.DAT", "-nl", os.path.join(TOOLS_FOLDER, "STREAMS.LST"), "-a", "mclub", "-th", "45"], check=True)
 
-
 # === 2. Convert STRTBL to JSON ===
 def convert_strtbl_to_json():
     if os.path.exists(STRTBL1_FILE) and not os.path.exists(STRTBL1_JSON):
@@ -134,7 +130,6 @@ def convert_strtbl_to_json():
         print(f"{YELLOW}Converting mcstrings08.strtbl → mcstrings08.json{RESET}")
         subprocess.run(["python", os.path.join(TOOLS_FOLDER, "strtbl.py"), "dec", STRTBL8_FILE], check=True)
         os.remove(STRTBL8_FILE)
-
 
 # === 3. Load existing JSON (songs text entries) <- no the fuck they ain't just that but okay ===
 def load_song_dicts():
@@ -335,7 +330,6 @@ def update_playlists(new_sdplay_songs, genre_songs, song_dicts):
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(song_dict, f, ensure_ascii=True, indent=4)
 
-
 # === 7. Convert json to strtbl ===
 def convert_json_to_strtbl():
     if os.path.exists(STRTBL1_JSON):
@@ -421,7 +415,6 @@ def build_rstm_files():
             if os.path.exists(wav_path):
                 os.remove(wav_path)
 
-
 # === 9. Compile back into DATs ===
 def compile_back():
     print(f"{YELLOW}Compiling ASSETS.DAT...{RESET}")
@@ -470,7 +463,6 @@ def main():
             answer = input(f"\n{BLUE}The script didn't find any new songs with format [artist] - [song].[ext].{RESET}\nDo you still want to continue? Write DICK REAL SMALL once you're ready: ").strip().lower()
             if answer == "dick real small": 
                 finalStep(song_dicts)
-
 
 if __name__ == "__main__":
     main()
