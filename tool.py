@@ -60,9 +60,6 @@ def sanitize_ascii_name(value, label):
     if not ascii_value:
         raise ValueError(f"{label} becomes empty after removing non-ASCII characters.")
 
-    if len(ascii_value) > MAX_NAME_LENGTH:
-        ascii_value = ascii_value[:MAX_NAME_LENGTH].rstrip()
-
     if not ascii_value:
         raise ValueError(f"{label} is empty after truncation.")
 
