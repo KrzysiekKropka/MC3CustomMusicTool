@@ -1,14 +1,21 @@
 import os
 import json
+import random
+import shutil
 import subprocess
 import re
 import platform
+from datetime import datetime
 
 BASE_FOLDER = os.getcwd()
 TOOLS_FOLDER = os.path.join(BASE_FOLDER, "external_tools")
 MUSIC_FOLDER = os.path.join(BASE_FOLDER, "STREAMS", "Music")
+PLAYLIST_FOLDER = os.path.join(BASE_FOLDER, "ASSETS", "tune", "audio", "playlist")
 PLAY_FOLDER = os.path.join(BASE_FOLDER, "ASSETS", "tune", "audio", "playlist", "city", "sd", "music")
 STRTBL_FOLDER = os.path.join(BASE_FOLDER, "ASSETS", "fonts")
+BACKUP_FOLDER = os.path.join(BASE_FOLDER, "backups")
+
+STREAM_EXTENSIONS = {".rsm", ".rstm"}
 
 SD_PLAY_FILE = os.path.join(PLAY_FOLDER, "sd.play")
 STRTBL2_FILE = os.path.join(STRTBL_FOLDER, "mcstrings02.strtbl")
@@ -51,6 +58,34 @@ LANGUAGES = [
 LANGUAGE_TEXTS = ["by", "de", "par", "von", "di", "by"]
 
 FONT_TEMPLATE = {"name": "smallspace", "scale32": [1.0, 1.0], "scale8": [0, 0], "size": 15}
+
+
+def create_backups():
+    """Copy the decoded folders before the tool starts changing them."""
+    folders_to_backup = [
+        ("ASSETS", os.path.join(BASE_FOLDER, "ASSETS")),
+        ("STREAMS", os.path.join(BASE_FOLDER, "STREAMS")),
+    ]
+    folders_to_backup = [
+        (name, path) for name, path in folders_to_backup if os.path.isdir(path)
+    ]
+
+    if not folders_to_backup:
+        return None
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = os.path.join(BACKUP_FOLDER, timestamp)
+    suffix = 1
+    while os.path.exists(backup_path):
+        backup_path = os.path.join(BACKUP_FOLDER, f"{timestamp}_{suffix}")
+        suffix += 1
+
+    os.makedirs(backup_path, exist_ok=True)
+    for name, source_path in folders_to_backup:
+        shutil.copytree(source_path, os.path.join(backup_path, name))
+
+    print(f"{GREEN}Backup created at {backup_path}{RESET}")
+    return backup_path
 
 def sanitize_ascii_name(value, label):
     ascii_value = value.encode("ascii", "ignore").decode("ascii").strip()
@@ -98,6 +133,201 @@ def make_song_id(clean_artist, song):
         artist_nospace = artist_nospace[:allowed_artist]
 
     return artist_nospace, song_nospace
+
+
+def read_playlist_lines(playlist_path):
+    lines = []
+    if not os.path.exists(playlist_path):
+        return lines
+
+    with open(playlist_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("num_songs:"):
+                lines.append(line)
+    return lines
+
+
+def write_playlist(playlist_path, lines):
+    os.makedirs(os.path.dirname(playlist_path), exist_ok=True)
+    with open(playlist_path, "w", encoding="utf-8") as f:
+        f.write(f"num_songs: {len(lines)}\n")
+        for line in lines:
+            f.write(line + "\n")
+
+
+def stream_reference_key(relative_path):
+    """Return a case-insensitive key for a stream path without its extension."""
+    normalized_path = relative_path.replace("\\", "/").strip().strip("/")
+    extension = os.path.splitext(normalized_path)[1].lower()
+    if extension in STREAM_EXTENSIONS:
+        normalized_path = normalized_path[:-len(extension)]
+    return normalized_path.casefold()
+
+
+def playlist_reference_key(line):
+    """Convert a playlist's music reference to the matching stream key."""
+    normalized_line = line.strip().replace("/", "\\")
+    if not normalized_line.lower().startswith("music\\"):
+        return None
+    return stream_reference_key(normalized_line[len("music\\"):])
+
+
+def available_stream_keys():
+    keys = set()
+    if not os.path.isdir(MUSIC_FOLDER):
+        return keys
+
+    for root, _, filenames in os.walk(MUSIC_FOLDER):
+        for filename in filenames:
+            if os.path.splitext(filename)[1].lower() not in STREAM_EXTENSIONS:
+                continue
+            relative_path = os.path.relpath(os.path.join(root, filename), MUSIC_FOLDER)
+            keys.add(stream_reference_key(relative_path))
+    return keys
+
+
+def playlist_files():
+    if not os.path.isdir(PLAYLIST_FOLDER):
+        return []
+
+    paths = []
+    for root, _, filenames in os.walk(PLAYLIST_FOLDER):
+        for filename in filenames:
+            if filename.lower().endswith(".play"):
+                paths.append(os.path.join(root, filename))
+    return sorted(paths)
+
+
+def remove_missing_playlist_references():
+    """Remove playlist entries whose .rsm/.rstm stream is absent."""
+    stream_keys = available_stream_keys()
+    removed_count = 0
+
+    for playlist_path in playlist_files():
+        existing_lines = read_playlist_lines(playlist_path)
+        valid_lines = []
+        removed_lines = []
+
+        for line in existing_lines:
+            reference_key = playlist_reference_key(line)
+            if reference_key is not None and reference_key not in stream_keys:
+                removed_lines.append(line)
+            else:
+                valid_lines.append(line)
+
+        if not removed_lines:
+            continue
+
+        write_playlist(playlist_path, valid_lines)
+        removed_count += len(removed_lines)
+        print(
+            f"{YELLOW}Removed {len(removed_lines)} missing stream reference(s) "
+            f"from {os.path.relpath(playlist_path, BASE_FOLDER)}{RESET}"
+        )
+
+    return removed_count
+
+
+def insert_randomly(lines, new_lines, rng=None):
+    rng = rng or random
+    updated_lines = list(lines)
+    for line in new_lines:
+        if line in updated_lines:
+            continue
+        updated_lines.insert(rng.randrange(len(updated_lines) + 1), line)
+    return updated_lines
+
+
+def unique_lines(lines):
+    seen = set()
+    unique = []
+    for line in lines:
+        if line not in seen:
+            unique.append(line)
+            seen.add(line)
+    return unique
+
+
+def race_playlist_targets(genre):
+    if genre.lower() == "instrumental":
+        return [
+            os.path.join(PLAY_FOLDER, "garage.play"),
+            os.path.join(PLAY_FOLDER, "..", "..", "tokyo", "music", "garage.play"),
+            os.path.join(PLAY_FOLDER, "..", "..", "detroit", "music", "garage.play"),
+            os.path.join(PLAY_FOLDER, "..", "..", "atlanta", "music", "garage.play")
+        ]
+
+    return [
+        os.path.join(
+            PLAY_FOLDER,
+            genre_race_map.get(genre, f"{genre.lower()}_race_music.play")
+        )
+    ]
+
+
+def insert_songs_in_sd_playlist(sd_lines, new_songs, race_sequences, rng=None):
+    """Place each new song between its race-playlist neighbours in sd.play."""
+    rng = rng or random
+    original_sd_lines = list(sd_lines)
+    original_sd_keys = set(original_sd_lines)
+    pending_songs = {
+        song for song in new_songs if song not in original_sd_keys
+    }
+    if not pending_songs:
+        return original_sd_lines
+
+    grouped_insertions = {}
+    seen_pending = set()
+
+    # Follow each genre playlist's order so multiple songs in one gap stay
+    # chronological relative to that genre playlist.
+    for race_lines in race_sequences.values():
+        for index, song in enumerate(race_lines):
+            if song not in pending_songs or song in seen_pending:
+                continue
+
+            previous_song = next(
+                (line for line in reversed(race_lines[:index]) if line in original_sd_keys),
+                None
+            )
+            next_song = next(
+                (line for line in race_lines[index + 1:] if line in original_sd_keys),
+                None
+            )
+            grouped_insertions.setdefault((previous_song, next_song), []).append(song)
+            seen_pending.add(song)
+
+    # A song can be missing from a race file if the file did not exist before
+    # this run. It still belongs in sd.play, so insert it randomly.
+    for song in new_songs:
+        if song in pending_songs and song not in seen_pending:
+            grouped_insertions.setdefault((None, None), []).append(song)
+            seen_pending.add(song)
+
+    updated_lines = list(original_sd_lines)
+    for (previous_song, next_song), songs in grouped_insertions.items():
+        if previous_song is None and next_song is None:
+            for song in songs:
+                updated_lines.insert(rng.randrange(len(updated_lines) + 1), song)
+            continue
+
+        if previous_song is not None and next_song is not None:
+            previous_index = updated_lines.index(previous_song)
+            next_index = updated_lines.index(next_song)
+            insertion_index = max(previous_index, next_index)
+        elif previous_song is not None:
+            previous_indexes = [
+                index for index, line in enumerate(updated_lines) if line == previous_song
+            ]
+            insertion_index = max(previous_indexes) + 1
+        else:
+            insertion_index = updated_lines.index(next_song)
+
+        for offset, song in enumerate(songs):
+            updated_lines.insert(insertion_index + offset, song)
+
+    return updated_lines
 
 # === 1. Decompile existing DAT files ===
 def decompile_dat_files():
@@ -185,6 +415,9 @@ def list_new_songs():
                 continue
 
             name, ext = os.path.splitext(filename)
+            if ext.lower() in STREAM_EXTENSIONS:
+                continue
+
             if ' - ' in name:
                 print(f"{GREEN}Found a song in {genre}: {filename}", end=". ")
                 artist, song, clean_artist = name_splitting(name)
@@ -199,13 +432,7 @@ def list_new_songs():
 def process_music_files(song_dicts):
     new_sdplay_songs = [] # "music\\HipHop\\Artist1_Song1", "music\\Rock\\Artist2_Song2", etc.
     genre_songs = {} # "Rock": ["music\\Rock\\Artist2_Song2", "music\\Rock\\Artist3_Song3"], "HipHop": [music\\HipHop\\Artist1_Song1, music\\HipHop\\Artist4_Song4]
-    existing_sdplay_songs = set()
-
-    if os.path.exists(SD_PLAY_FILE):
-        with open(SD_PLAY_FILE, "r", encoding="utf-8") as f:
-            for line in f:
-                if not line.startswith("num_songs:"):
-                    existing_sdplay_songs.add(line.strip())
+    existing_sdplay_songs = set(read_playlist_lines(SD_PLAY_FILE))
 
     for genre in os.listdir(MUSIC_FOLDER):
         genre_path = os.path.join(MUSIC_FOLDER, genre)
@@ -218,7 +445,7 @@ def process_music_files(song_dicts):
                 continue
 
             name, ext = os.path.splitext(filename)
-            if ' - ' not in name:
+            if ext.lower() in STREAM_EXTENSIONS or ' - ' not in name:
                 continue
 
             artist, song, clean_artist = name_splitting(name)
@@ -264,64 +491,37 @@ def process_music_files(song_dicts):
     return song_dicts, new_sdplay_songs, genre_songs
 
 # === 6. Update sd.play and per-genre race files ===
-def update_playlists(new_sdplay_songs, genre_songs, song_dicts):
-    # sd.play
-    sd_play_lines = []
-    if os.path.exists(SD_PLAY_FILE):
-        with open(SD_PLAY_FILE, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("num_songs:"):
-                    sd_play_lines.append(line)
+def update_playlists(new_sdplay_songs, genre_songs, song_dicts, rng=None):
+    # Clean stale references before reading the playlists. This also means a
+    # replacement song with the same name can be added again in this run.
+    remove_missing_playlist_references()
 
-    for line in new_sdplay_songs:
-        if line not in sd_play_lines:
-            sd_play_lines.append(line)
+    race_sequences = {}
 
-    with open(SD_PLAY_FILE, "w", encoding="utf-8") as f:
-        f.write(f"num_songs: {len(sd_play_lines)}\n")
-        for line in sd_play_lines:
-            f.write(line + "\n")
-
-    # genre race files
+    # Insert new songs at random positions in their genre race playlists.
     for genre, songs in genre_songs.items():
-        targets = []
+        unique_songs = unique_lines(songs)
+        for race_file_name in race_playlist_targets(genre):
+            existing_lines = read_playlist_lines(race_file_name)
+            new_lines = [song for song in unique_songs if song not in existing_lines]
+            updated_lines = insert_randomly(existing_lines, new_lines, rng)
+            write_playlist(race_file_name, updated_lines)
 
-        # instrumentals are fucking stupid, every city has a different mandatory garage.play file 
-        if genre.lower() == "instrumental":
-            targets = [
-                os.path.join(PLAY_FOLDER, "garage.play"),
-                os.path.join(PLAY_FOLDER, "..", "..", "tokyo", "music", "garage.play"),
-                os.path.join(PLAY_FOLDER, "..", "..", "detroit", "music", "garage.play"),
-                os.path.join(PLAY_FOLDER, "..", "..", "atlanta", "music", "garage.play")
-            ]
-        else:
-            targets = [
-                os.path.join(
-                    PLAY_FOLDER,
-                    genre_race_map.get(genre, f"{genre.lower()}_race_music.play")
-                )
-            ]
+            # Only the SD race playlist determines the corresponding position
+            # in sd.play. Instrumental songs remain garage-only as before.
+            if genre.lower() != "instrumental":
+                race_sequences[genre] = updated_lines
 
-        for race_file_name in targets:
-            os.makedirs(os.path.dirname(race_file_name), exist_ok=True)
-
-            existing_lines = []
-            if os.path.exists(race_file_name):
-                with open(race_file_name, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line and not line.startswith("num_songs:"):
-                            existing_lines.append(line)
-
-            for song in songs:
-                if song not in existing_lines:
-                    existing_lines.append(song)
-
-            with open(race_file_name, "w", encoding="utf-8") as f:
-                f.write(f"num_songs: {len(existing_lines)}\n")
-                for line in existing_lines:
-                    f.write(line + "\n")
+    # Insert each new song in sd.play between the same neighbouring existing
+    # songs that surround it in its genre race playlist.
+    sd_play_lines = read_playlist_lines(SD_PLAY_FILE)
+    sd_play_lines = insert_songs_in_sd_playlist(
+        sd_play_lines,
+        unique_lines(new_sdplay_songs),
+        race_sequences,
+        rng,
+    )
+    write_playlist(SD_PLAY_FILE, sd_play_lines)
 
     # update JSON
     for entry in song_dicts.values():
@@ -363,7 +563,7 @@ def build_rstm_files():
             file_path = os.path.join(genre_path, filename)
             name, ext = os.path.splitext(filename)
 
-            if filename.startswith('.') or not os.path.isfile(file_path) or ext.lower() == '.rsm':
+            if filename.startswith('.') or not os.path.isfile(file_path) or ext.lower() in STREAM_EXTENSIONS:
                 continue
 
             if " - " in name:
@@ -425,6 +625,7 @@ def compile_back():
 
 # === 10. Final step ===
 def finalStep(song_dicts):
+    remove_missing_playlist_references()
     song_dicts, new_sdplay_songs, genre_songs = process_music_files(song_dicts)
     update_playlists(new_sdplay_songs, genre_songs, song_dicts)
     convert_json_to_strtbl()
@@ -435,9 +636,13 @@ def finalStep(song_dicts):
         compile_back()
 
 def main():
+    backup_created = False
+
     if os.path.exists(os.path.join(BASE_FOLDER, "ASSETS.DAT")) or os.path.exists(os.path.join(BASE_FOLDER, "STREAMS.DAT")):
         answer = input(f"{BLUE}Do you want to decode STREAMS.DAT or ASSETS.DAT?{RESET} (Y/N): ").strip().lower()
         if answer == "y": 
+            create_backups()
+            backup_created = True
             decompile_dat_files()
             answer = input(f"{BLUE}The DAT files were decoded.{RESET} Do you want to continue? (Y/N): ").strip().lower()
             if answer != "y":
@@ -445,6 +650,8 @@ def main():
     if not os.path.exists(MUSIC_FOLDER) or not os.path.exists(PLAY_FOLDER) or not os.path.exists(STRTBL_FOLDER):
         print(f"\n{RED}There ain't shit to change! I need STREAMS and ASSETS. Either add them already decoded or in .DAT format.")
         return
+    if not backup_created:
+        create_backups()
     convert_strtbl_to_json()
     song_dict1, song_dict2, song_dict4, song_dict8 = load_song_dicts()
     song_dicts = {

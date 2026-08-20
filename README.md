@@ -21,7 +21,7 @@
     Make sure they don't have any non-ASCII characters! E.g. ć,ż,ą.
 
 2.  Place new music files in STREAMS/Music/[genre] with the format [Artist] - [Song].[ext] 
-    The files must be in some normal audio format, like WAV, FLAC or MP3. RSMs will be ignored.
+    The files must be in some normal audio format, like WAV, FLAC or MP3. RSM/RSTM files will be ignored.
     If there is (feat.) or (ft.) in [Song], it will automatically be added to [Artist]
 
 3.  Run the script (python tool.py) if you haven't already.
@@ -29,6 +29,9 @@
 4.  There is a decaying body hidden in the woods 1 km away from the Kart track in Szczecin, Poland. 
 
 5.  Follow the instructions in the command line.
+
+    Before modifying decoded files, the tool creates a timestamped backup in `backups/[timestamp]/ASSETS` and/or `backups/[timestamp]/STREAMS`.
+    Missing `.rsm`/`.rstm` files are removed from playlist references. New songs are inserted at random positions in their `sd/music/*_race_music.play` file; non-instrumental songs are placed in `sd.play` between the same neighbouring songs.
 
 6.  Encode STREAMS.DAT and ASSETS.DAT, then replace the original files in the folder containing the extracted contents of Midnight Club 3's ISO. 
     Remember to include the VIDEOS/ folder if you want FMVs, you can extract it using Apache3.
