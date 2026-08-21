@@ -5,17 +5,24 @@ import shutil
 import subprocess
 import re
 import platform
+import sys
 from datetime import datetime
 
-BASE_FOLDER = os.getcwd()
+BASE_FOLDER = os.path.dirname(os.path.abspath(__file__))
 TOOLS_FOLDER = os.path.join(BASE_FOLDER, "external_tools")
-MUSIC_FOLDER = os.path.join(BASE_FOLDER, "STREAMS", "Music")
+STREAMS_FOLDER = os.path.join(BASE_FOLDER, "STREAMS")
+ASSETS_STREAMS_FOLDER = os.path.join(BASE_FOLDER, "ASSETS", "audio", "STREAMS")
+MUSIC_FOLDER = os.path.join(STREAMS_FOLDER, "Music")
 PLAYLIST_FOLDER = os.path.join(BASE_FOLDER, "ASSETS", "tune", "audio", "playlist")
 PLAY_FOLDER = os.path.join(BASE_FOLDER, "ASSETS", "tune", "audio", "playlist", "city", "sd", "music")
 STRTBL_FOLDER = os.path.join(BASE_FOLDER, "ASSETS", "fonts")
 BACKUP_FOLDER = os.path.join(BASE_FOLDER, "backups")
 
 STREAM_EXTENSIONS = {".rsm", ".rstm"}
+AUDIO_EXTENSIONS = {
+    ".aac", ".aif", ".aiff", ".alac", ".flac", ".m4a", ".mp3",
+    ".ogg", ".opus", ".wav", ".wma"
+}
 
 SD_PLAY_FILE = os.path.join(PLAY_FOLDER, "sd.play")
 STRTBL2_FILE = os.path.join(STRTBL_FOLDER, "mcstrings02.strtbl")
@@ -38,7 +45,6 @@ RESET = "\033[0m"
 if platform.system() == "Windows":
     ffmpeg_bin = os.path.join(TOOLS_FOLDER, "ffmpeg.exe")
 else:
-    if os.geteuid() != 0: input(f"{RED}It's recommended to run this tool as root, otherwise building rstm files might end with a crash due to a permission error.\n{RESET}Do you want to continue regardless? Press enter to continue: ")
     ffmpeg_bin = "ffmpeg"
 
 genre_race_map = {
@@ -87,15 +93,63 @@ def create_backups():
     print(f"{GREEN}Backup created at {backup_path}{RESET}")
     return backup_path
 
+
+def warn_about_permissions():
+    if platform.system() != "Windows" and hasattr(os, "geteuid") and os.geteuid() != 0:
+        input(
+            f"{RED}It's recommended to run this tool as root, otherwise building rstm files "
+            f"might end with a crash due to a permission error.\n{RESET}"
+            "Do you want to continue regardless? Press enter to continue: "
+        )
+
+
+def unique_existing_directories(paths):
+    directories = []
+    seen = set()
+    for path in paths:
+        normalized_path = os.path.abspath(path)
+        if normalized_path in seen or not os.path.isdir(normalized_path):
+            continue
+        seen.add(normalized_path)
+        directories.append(normalized_path)
+    return directories
+
+
+def music_input_folders():
+    return unique_existing_directories([
+        MUSIC_FOLDER,
+        os.path.join(ASSETS_STREAMS_FOLDER, "Music"),
+    ])
+
+
+def stream_search_roots():
+    return unique_existing_directories([
+        MUSIC_FOLDER,
+        ASSETS_STREAMS_FOLDER,
+    ])
+
+
+def stream_archive_folder():
+    candidates = [STREAMS_FOLDER, ASSETS_STREAMS_FOLDER]
+    for candidate in candidates:
+        if not os.path.isdir(candidate):
+            continue
+        for root, _, filenames in os.walk(candidate):
+            if any(os.path.splitext(filename)[1].lower() in STREAM_EXTENSIONS for filename in filenames):
+                return candidate
+
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            return candidate
+    return STREAMS_FOLDER
+
+
 def sanitize_ascii_name(value, label):
     ascii_value = value.encode("ascii", "ignore").decode("ascii").strip()
     ascii_value = re.sub(r"\s+", " ", ascii_value)
 
     if not ascii_value:
         raise ValueError(f"{label} becomes empty after removing non-ASCII characters.")
-
-    if not ascii_value:
-        raise ValueError(f"{label} is empty after truncation.")
 
     return ascii_value
 
@@ -175,15 +229,16 @@ def playlist_reference_key(line):
 
 def available_stream_keys():
     keys = set()
-    if not os.path.isdir(MUSIC_FOLDER):
-        return keys
-
-    for root, _, filenames in os.walk(MUSIC_FOLDER):
-        for filename in filenames:
-            if os.path.splitext(filename)[1].lower() not in STREAM_EXTENSIONS:
-                continue
-            relative_path = os.path.relpath(os.path.join(root, filename), MUSIC_FOLDER)
-            keys.add(stream_reference_key(relative_path))
+    for stream_root in stream_search_roots():
+        for root, _, filenames in os.walk(stream_root):
+            for filename in filenames:
+                if os.path.splitext(filename)[1].lower() not in STREAM_EXTENSIONS:
+                    continue
+                relative_path = os.path.relpath(os.path.join(root, filename), stream_root)
+                relative_parts = relative_path.replace(os.sep, "/").split("/")
+                if relative_parts and relative_parts[0].casefold() == "music":
+                    relative_parts = relative_parts[1:]
+                keys.add(stream_reference_key("/".join(relative_parts)))
     return keys
 
 
@@ -199,30 +254,65 @@ def playlist_files():
     return sorted(paths)
 
 
-def remove_missing_playlist_references():
-    """Remove playlist entries whose .rsm/.rstm stream is absent."""
+def find_missing_playlist_references():
+    """Return stale references, or None when the stream tree is unsafe to scan."""
+    search_roots = stream_search_roots()
+    if not search_roots:
+        print(
+            f"{YELLOW}Skipping missing-stream cleanup: no stream folders were found "
+            f"({MUSIC_FOLDER} or ASSETS/audio/STREAMS).{RESET}"
+        )
+        return None
+
     stream_keys = available_stream_keys()
-    removed_count = 0
+    if not stream_keys:
+        print(
+            f"{YELLOW}Skipping missing-stream cleanup: no .rsm/.rstm files were found "
+            f"under the configured stream folders.{RESET}"
+        )
+        return None
+
+    missing_references = {}
 
     for playlist_path in playlist_files():
-        existing_lines = read_playlist_lines(playlist_path)
-        valid_lines = []
         removed_lines = []
 
-        for line in existing_lines:
+        for line in read_playlist_lines(playlist_path):
             reference_key = playlist_reference_key(line)
             if reference_key is not None and reference_key not in stream_keys:
                 removed_lines.append(line)
-            else:
-                valid_lines.append(line)
 
-        if not removed_lines:
+        if removed_lines:
+            missing_references[playlist_path] = set(removed_lines)
+
+    return missing_references
+
+
+_SCAN_MISSING_REFERENCES = object()
+
+
+def remove_missing_playlist_references(missing_references=_SCAN_MISSING_REFERENCES):
+    """Remove playlist entries whose .rsm/.rstm stream is absent."""
+    if missing_references is _SCAN_MISSING_REFERENCES:
+        missing_references = find_missing_playlist_references()
+
+    # None means the stream tree was absent or empty, so changing playlists
+    # would be more dangerous than useful.
+    if missing_references is None:
+        return 0
+
+    removed_count = 0
+    for playlist_path, removed_lines in missing_references.items():
+        existing_lines = read_playlist_lines(playlist_path)
+        valid_lines = [line for line in existing_lines if line not in removed_lines]
+        removed_from_file = len(existing_lines) - len(valid_lines)
+        if not removed_from_file:
             continue
 
         write_playlist(playlist_path, valid_lines)
-        removed_count += len(removed_lines)
+        removed_count += removed_from_file
         print(
-            f"{YELLOW}Removed {len(removed_lines)} missing stream reference(s) "
+            f"{YELLOW}Removed {removed_from_file} missing stream reference(s) "
             f"from {os.path.relpath(playlist_path, BASE_FOLDER)}{RESET}"
         )
 
@@ -333,32 +423,48 @@ def insert_songs_in_sd_playlist(sd_lines, new_songs, race_sequences, rng=None):
 def decompile_dat_files():
     if os.path.exists(os.path.join(BASE_FOLDER, "ASSETS.DAT")):
         print(f"{YELLOW}Decompiling ASSETS.DAT...{RESET}")
-        subprocess.run(["python", os.path.join(TOOLS_FOLDER, "dave.py"), "X", "ASSETS.DAT"], check=True)
+        subprocess.run([
+            sys.executable,
+            os.path.join(TOOLS_FOLDER, "dave.py"),
+            "X",
+            os.path.join(BASE_FOLDER, "ASSETS.DAT"),
+        ], check=True)
 
     if os.path.exists(os.path.join(BASE_FOLDER, "STREAMS.DAT")):
         print(f"{YELLOW}Decompiling STREAMS.DAT...{RESET}")
-        subprocess.run(["python", os.path.join(TOOLS_FOLDER, "hash_build.py"), "X", "STREAMS.DAT", "-nl", os.path.join(TOOLS_FOLDER, "STREAMS.LST"), "-a", "mclub", "-th", "45"], check=True)
+        subprocess.run([
+            sys.executable,
+            os.path.join(TOOLS_FOLDER, "hash_build.py"),
+            "X",
+            os.path.join(BASE_FOLDER, "STREAMS.DAT"),
+            "-nl",
+            os.path.join(TOOLS_FOLDER, "STREAMS.LST"),
+            "-a",
+            "mclub",
+            "-th",
+            "45",
+        ], check=True)
 
 # === 2. Convert STRTBL to JSON ===
 def convert_strtbl_to_json():
     if os.path.exists(STRTBL1_FILE) and not os.path.exists(STRTBL1_JSON):
         print(f"{YELLOW}Converting mcstrings01.strtbl → mcstrings01.json{RESET}")
-        subprocess.run(["python", os.path.join(TOOLS_FOLDER, "strtbl.py"), "dec", STRTBL1_FILE], check=True)
+        subprocess.run([sys.executable, os.path.join(TOOLS_FOLDER, "strtbl.py"), "dec", STRTBL1_FILE], check=True)
         os.remove(STRTBL1_FILE)
 
     if os.path.exists(STRTBL2_FILE) and not os.path.exists(STRTBL2_JSON):
         print(f"{YELLOW}Converting mcstrings02.strtbl → mcstrings02.json{RESET}")
-        subprocess.run(["python", os.path.join(TOOLS_FOLDER, "strtbl.py"), "dec", STRTBL2_FILE], check=True)
+        subprocess.run([sys.executable, os.path.join(TOOLS_FOLDER, "strtbl.py"), "dec", STRTBL2_FILE], check=True)
         os.remove(STRTBL2_FILE)
 
     if os.path.exists(STRTBL4_FILE) and not os.path.exists(STRTBL4_JSON):
         print(f"{YELLOW}Converting mcstrings04.strtbl → mcstrings04.json{RESET}")
-        subprocess.run(["python", os.path.join(TOOLS_FOLDER, "strtbl.py"), "dec", STRTBL4_FILE], check=True)
+        subprocess.run([sys.executable, os.path.join(TOOLS_FOLDER, "strtbl.py"), "dec", STRTBL4_FILE], check=True)
         os.remove(STRTBL4_FILE)
 
     if os.path.exists(STRTBL8_FILE) and not os.path.exists(STRTBL8_JSON):
         print(f"{YELLOW}Converting mcstrings08.strtbl → mcstrings08.json{RESET}")
-        subprocess.run(["python", os.path.join(TOOLS_FOLDER, "strtbl.py"), "dec", STRTBL8_FILE], check=True)
+        subprocess.run([sys.executable, os.path.join(TOOLS_FOLDER, "strtbl.py"), "dec", STRTBL8_FILE], check=True)
         os.remove(STRTBL8_FILE)
 
 # === 3. Load existing JSON (songs text entries) <- no the fuck they ain't just that but okay ===
@@ -404,97 +510,112 @@ def list_new_songs():
     number = 0
     print("")
 
-    for genre in os.listdir(MUSIC_FOLDER):
-        genre_path = os.path.join(MUSIC_FOLDER, genre)
-        if not os.path.isdir(genre_path):
-            continue
-
-        for filename in os.listdir(genre_path):
-            file_path = os.path.join(genre_path, filename)
-            if not os.path.isfile(file_path) or filename.startswith('.'):
+    for music_folder in music_input_folders():
+        for genre in os.listdir(music_folder):
+            genre_path = os.path.join(music_folder, genre)
+            if not os.path.isdir(genre_path):
                 continue
 
-            name, ext = os.path.splitext(filename)
-            if ext.lower() in STREAM_EXTENSIONS:
-                continue
+            for filename in os.listdir(genre_path):
+                file_path = os.path.join(genre_path, filename)
+                if not os.path.isfile(file_path) or filename.startswith('.'):
+                    continue
 
-            if ' - ' in name:
-                print(f"{GREEN}Found a song in {genre}: {filename}", end=". ")
-                artist, song, clean_artist = name_splitting(name)
-                print(f"{RESET}Will be {song} by {artist}")
-                number += 1
-            else:
-                continue
+                name, ext = os.path.splitext(filename)
+                if ext.lower() not in AUDIO_EXTENSIONS:
+                    continue
+
+                if ' - ' in name:
+                    print(f"{GREEN}Found a song in {genre}: {filename}", end=". ")
+                    artist, song, clean_artist = name_splitting(name)
+                    print(f"{RESET}Will be {song} by {artist}")
+                    number += 1
+                else:
+                    continue
 
     return(number)
 
 # === 5. Process songs in STREAMS/Music ===
-def process_music_files(song_dicts):
+def process_music_files(song_dicts, missing_playlist_references=None):
     new_sdplay_songs = [] # "music\\HipHop\\Artist1_Song1", "music\\Rock\\Artist2_Song2", etc.
     genre_songs = {} # "Rock": ["music\\Rock\\Artist2_Song2", "music\\Rock\\Artist3_Song3"], "HipHop": [music\\HipHop\\Artist1_Song1, music\\HipHop\\Artist4_Song4]
-    existing_sdplay_songs = set(read_playlist_lines(SD_PLAY_FILE))
+    stale_sdplay_songs = set()
+    if missing_playlist_references:
+        stale_sdplay_songs = missing_playlist_references.get(SD_PLAY_FILE, set())
+    existing_sdplay_songs = {
+        line for line in read_playlist_lines(SD_PLAY_FILE)
+        if line not in stale_sdplay_songs
+    }
 
-    for genre in os.listdir(MUSIC_FOLDER):
-        genre_path = os.path.join(MUSIC_FOLDER, genre)
-        if not os.path.isdir(genre_path):
-            continue
-
-        for filename in os.listdir(genre_path):
-            file_path = os.path.join(genre_path, filename)
-            if not os.path.isfile(file_path) or filename.startswith('.'):
+    for music_folder in music_input_folders():
+        for genre in os.listdir(music_folder):
+            genre_path = os.path.join(music_folder, genre)
+            if not os.path.isdir(genre_path):
                 continue
 
-            name, ext = os.path.splitext(filename)
-            if ext.lower() in STREAM_EXTENSIONS or ' - ' not in name:
-                continue
+            for filename in os.listdir(genre_path):
+                file_path = os.path.join(genre_path, filename)
+                if not os.path.isfile(file_path) or filename.startswith('.'):
+                    continue
 
-            artist, song, clean_artist = name_splitting(name)
-            try:
-                artist, song, clean_artist = sanitize_song_metadata(artist, song, clean_artist)
-            except ValueError as error:
-                print(f"{YELLOW}Skipping {filename}: {error}{RESET}")
-                continue
+                name, ext = os.path.splitext(filename)
+                if ext.lower() not in AUDIO_EXTENSIONS or ' - ' not in name:
+                    continue
 
-            artist_nospace, song_nospace = make_song_id(clean_artist, song)
+                artist, song, clean_artist = name_splitting(name)
+                try:
+                    artist, song, clean_artist = sanitize_song_metadata(artist, song, clean_artist)
+                except ValueError as error:
+                    print(f"{YELLOW}Skipping {filename}: {error}{RESET}")
+                    continue
 
-            if not artist_nospace or not song_nospace:
-                print(f"{YELLOW}Skipping {filename}: ASCII-safe artist/song id became empty.{RESET}")
-                continue
+                artist_nospace, song_nospace = make_song_id(clean_artist, song)
 
-            song_id = f"{artist_nospace}_{song_nospace}"
-            json_key = f"music_{genre}_{song_id}"
+                if not artist_nospace or not song_nospace:
+                    print(f"{YELLOW}Skipping {filename}: ASCII-safe artist/song id became empty.{RESET}")
+                    continue
 
-            for entry in song_dicts.values():
-                target_dict = entry["data"]
-                if "data" not in target_dict:
-                    target_dict["data"] = {}
+                song_id = f"{artist_nospace}_{song_nospace}"
+                json_key = f"music_{genre}_{song_id}"
 
-                if json_key not in target_dict["data"]:
-                    target_dict["data"][json_key] = {}
-                    for lang, text_prefix in zip(LANGUAGES, LANGUAGE_TEXTS):
-                        target_dict["data"][json_key][lang] = {
-                            "text": f"\"{song}\"\n{text_prefix} {artist}",
-                            "font": FONT_TEMPLATE
-                        }
+                for entry in song_dicts.values():
+                    target_dict = entry["data"]
+                    if "data" not in target_dict:
+                        target_dict["data"] = {}
 
-            # Playlist format of songs, for some reason they use backslashes
-            sdplay_song = f"music\\{genre}\\{song_id}"
+                    if json_key not in target_dict["data"]:
+                        target_dict["data"][json_key] = {}
+                        for lang, text_prefix in zip(LANGUAGES, LANGUAGE_TEXTS):
+                            target_dict["data"][json_key][lang] = {
+                                "text": f"\"{song}\"\n{text_prefix} {artist}",
+                                "font": FONT_TEMPLATE
+                            }
 
-            # Only add to sd.play if NOT instrumental
-            if genre.lower() != "instrumental":
-                if sdplay_song not in existing_sdplay_songs:
-                    new_sdplay_songs.append(sdplay_song)
-                    existing_sdplay_songs.add(sdplay_song)
+                # Playlist format of songs, for some reason they use backslashes
+                sdplay_song = f"music\\{genre}\\{song_id}"
 
-            genre_songs.setdefault(genre, []).append(sdplay_song)
+                # Only add to sd.play if NOT instrumental
+                if genre.lower() != "instrumental":
+                    if sdplay_song not in existing_sdplay_songs:
+                        new_sdplay_songs.append(sdplay_song)
+                        existing_sdplay_songs.add(sdplay_song)
+
+                genre_songs.setdefault(genre, []).append(sdplay_song)
 
     return song_dicts, new_sdplay_songs, genre_songs
 
 # === 6. Update sd.play and per-genre race files ===
-def update_playlists(new_sdplay_songs, genre_songs, song_dicts, rng=None):
-    # Clean stale references before reading the playlists. This also means a
-    # replacement song with the same name can be added again in this run.
-    remove_missing_playlist_references()
+def update_playlists(
+    new_sdplay_songs,
+    genre_songs,
+    song_dicts,
+    rng=None,
+    missing_playlist_references=_SCAN_MISSING_REFERENCES,
+):
+    # Clean stale references after RSM generation has succeeded. A snapshot
+    # taken before generation also lets a replacement song reclaim its old
+    # playlist position instead of being mistaken for an existing song.
+    remove_missing_playlist_references(missing_playlist_references)
 
     race_sequences = {}
 
@@ -534,108 +655,136 @@ def update_playlists(new_sdplay_songs, genre_songs, song_dicts, rng=None):
 def convert_json_to_strtbl():
     if os.path.exists(STRTBL1_JSON):
         print(f"{YELLOW}Converting mcstrings01.json → mcstrings01.strtbl{RESET}")
-        subprocess.run(["python", os.path.join(TOOLS_FOLDER, "strtbl.py"), "enc", STRTBL1_JSON], check=True)
+        subprocess.run([sys.executable, os.path.join(TOOLS_FOLDER, "strtbl.py"), "enc", STRTBL1_JSON], check=True)
         os.remove(STRTBL1_JSON)
 
     if os.path.exists(STRTBL2_JSON):
         print(f"{YELLOW}Converting mcstrings02.json → mcstrings02.strtbl{RESET}")
-        subprocess.run(["python", os.path.join(TOOLS_FOLDER, "strtbl.py"), "enc", STRTBL2_JSON], check=True)
+        subprocess.run([sys.executable, os.path.join(TOOLS_FOLDER, "strtbl.py"), "enc", STRTBL2_JSON], check=True)
         os.remove(STRTBL2_JSON)
 
     if os.path.exists(STRTBL4_JSON):
         print(f"{YELLOW}Converting mcstrings04.json → mcstrings04.strtbl{RESET}")
-        subprocess.run(["python", os.path.join(TOOLS_FOLDER, "strtbl.py"), "enc", STRTBL4_JSON], check=True)
+        subprocess.run([sys.executable, os.path.join(TOOLS_FOLDER, "strtbl.py"), "enc", STRTBL4_JSON], check=True)
         os.remove(STRTBL4_JSON)
 
     if os.path.exists(STRTBL8_JSON):
         print(f"{YELLOW}Converting mcstrings08.json → mcstrings08.strtbl{RESET}")
-        subprocess.run(["python", os.path.join(TOOLS_FOLDER, "strtbl.py"), "enc", STRTBL8_JSON], check=True)
+        subprocess.run([sys.executable, os.path.join(TOOLS_FOLDER, "strtbl.py"), "enc", STRTBL8_JSON], check=True)
         os.remove(STRTBL8_JSON)
 
 # === 8. Build RSTM files from audio ===
 def build_rstm_files():
-    for genre in os.listdir(MUSIC_FOLDER):
-        genre_path = os.path.join(MUSIC_FOLDER, genre)
-        if not os.path.isdir(genre_path):
-            continue
-
-        for filename in os.listdir(genre_path):
-            file_path = os.path.join(genre_path, filename)
-            name, ext = os.path.splitext(filename)
-
-            if filename.startswith('.') or not os.path.isfile(file_path) or ext.lower() in STREAM_EXTENSIONS:
+    for music_folder in music_input_folders():
+        for genre in os.listdir(music_folder):
+            genre_path = os.path.join(music_folder, genre)
+            if not os.path.isdir(genre_path):
                 continue
 
-            if " - " in name:
-                artist, song, clean_artist = name_splitting(name)
-                try:
-                    artist, song, clean_artist = sanitize_song_metadata(artist, song, clean_artist)
-                except ValueError as error:
-                    print(f"{YELLOW}Skipping RSTM build for {filename}: {error}{RESET}")
-                    continue
-                artist_nospace, song_nospace = make_song_id(clean_artist, song)
+            for filename in os.listdir(genre_path):
+                file_path = os.path.join(genre_path, filename)
+                name, ext = os.path.splitext(filename)
 
-                if not artist_nospace or not song_nospace:
-                    print(f"{YELLOW}Skipping RSTM build for {filename}: ASCII-safe artist/song id became empty.{RESET}")
-                    continue
-                artist_song = f"{artist_nospace}_{song_nospace}"
-            else:
-                artist_song = re.sub(r"[^\w]", "", sanitize_ascii_name(name, "File name"))[:MAX_NAME_LENGTH]
-                if not artist_song:
-                    print(f"{YELLOW}Skipping RSTM build for {filename}: ASCII-safe file name became empty.{RESET}")
+                if filename.startswith('.') or not os.path.isfile(file_path) or ext.lower() not in AUDIO_EXTENSIONS:
                     continue
 
-            wav_path = os.path.join(genre_path, f"{artist_song}.wav")
-            original_file = None
+                if " - " in name:
+                    artist, song, clean_artist = name_splitting(name)
+                    try:
+                        artist, song, clean_artist = sanitize_song_metadata(artist, song, clean_artist)
+                    except ValueError as error:
+                        print(f"{YELLOW}Skipping RSTM build for {filename}: {error}{RESET}")
+                        continue
+                    artist_nospace, song_nospace = make_song_id(clean_artist, song)
 
-            # Convert to WAV
-            if ext.lower() != '.wav':
+                    if not artist_nospace or not song_nospace:
+                        print(f"{YELLOW}Skipping RSTM build for {filename}: ASCII-safe artist/song id became empty.{RESET}")
+                        continue
+                    artist_song = f"{artist_nospace}_{song_nospace}"
+                else:
+                    artist_song = re.sub(r"[^\w]", "", sanitize_ascii_name(name, "File name"))[:MAX_NAME_LENGTH]
+                    if not artist_song:
+                        print(f"{YELLOW}Skipping RSTM build for {filename}: ASCII-safe file name became empty.{RESET}")
+                        continue
+
                 wav_path = os.path.join(genre_path, f"{artist_song}.wav")
-                if not os.path.exists(wav_path):
+                original_file = None
+
+                # Convert to WAV
+                if ext.lower() != '.wav':
+                    wav_path = os.path.join(genre_path, f"{artist_song}.wav")
                     print(f"{YELLOW}Converting {filename} → {artist_song}.wav")
                     subprocess.run([
                         ffmpeg_bin, '-y', '-i', file_path,
                         '-ac', '2', '-ar', '44100', '-acodec', 'pcm_s16le',
                         wav_path
                     ], check=True)
-                original_file = file_path
-            else:
-                # If it’s already a wav, rename to artist_song
-                if name != artist_song:
-                    wav_path = os.path.join(genre_path, f"{artist_song}.wav")
-                    os.rename(file_path, wav_path)
+                    original_file = file_path
+                else:
+                    # If it’s already a wav, rename to artist_song
+                    if name != artist_song:
+                        wav_path = os.path.join(genre_path, f"{artist_song}.wav")
+                        os.rename(file_path, wav_path)
 
-            # Build RSTM
-            print(f"{YELLOW}Building RSTM for {artist_song}.wav")
-            subprocess.run(['python', os.path.join(TOOLS_FOLDER, "rstm_build.py"), wav_path], check=True)
+                # Build RSTM
+                print(f"{YELLOW}Building RSTM for {artist_song}.wav")
+                subprocess.run([sys.executable, os.path.join(TOOLS_FOLDER, "rstm_build.py"), wav_path], check=True)
 
-            # Cleanup
-            if original_file and os.path.exists(original_file):
-                os.remove(original_file)
-            if os.path.exists(wav_path):
-                os.remove(wav_path)
+                # Cleanup
+                if original_file and os.path.exists(original_file):
+                    os.remove(original_file)
+                if os.path.exists(wav_path):
+                    os.remove(wav_path)
 
 # === 9. Compile back into DATs ===
 def compile_back():
     print(f"{YELLOW}Compiling ASSETS.DAT...{RESET}")
-    subprocess.run(["python", os.path.join(TOOLS_FOLDER, "dave.py"), "B", "-ca", "-cn", "-cf", "-fc", "1", "ASSETS", "ASSETS.DAT"], check=True)
+    subprocess.run([
+        sys.executable,
+        os.path.join(TOOLS_FOLDER, "dave.py"),
+        "B",
+        "-ca",
+        "-cn",
+        "-cf",
+        "-fc",
+        "1",
+        os.path.join(BASE_FOLDER, "ASSETS"),
+        os.path.join(BASE_FOLDER, "ASSETS.DAT"),
+    ], check=True)
 
     print(f"{YELLOW}Compiling STREAMS.DAT...{RESET}")
-    subprocess.run(["python", os.path.join(TOOLS_FOLDER, "hash_build.py"), "B", "STREAMS", "STREAMS.DAT", "-a", "MClub"], check=True)
+    subprocess.run([
+        sys.executable,
+        os.path.join(TOOLS_FOLDER, "hash_build.py"),
+        "B",
+        stream_archive_folder(),
+        os.path.join(BASE_FOLDER, "STREAMS.DAT"),
+        "-a",
+        "MClub",
+    ], check=True)
 
 # === 10. Final step ===
 def finalStep(song_dicts):
-    remove_missing_playlist_references()
-    song_dicts, new_sdplay_songs, genre_songs = process_music_files(song_dicts)
-    update_playlists(new_sdplay_songs, genre_songs, song_dicts)
-    convert_json_to_strtbl()
+    missing_playlist_references = find_missing_playlist_references()
+    song_dicts, new_sdplay_songs, genre_songs = process_music_files(
+        song_dicts,
+        missing_playlist_references,
+    )
     build_rstm_files()
+    update_playlists(
+        new_sdplay_songs,
+        genre_songs,
+        song_dicts,
+        missing_playlist_references=missing_playlist_references,
+    )
+    convert_json_to_strtbl()
 
     answer = input(f"\n{BLUE}Do you want to encode back into STREAMS.DAT and ASSETS.DAT?{RESET}\nOnly do it if the ASSETS and STREAMS folders aren't missing any files (Y/N): ").strip().lower()
     if answer == "y":
         compile_back()
 
 def main():
+    warn_about_permissions()
     backup_created = False
 
     if os.path.exists(os.path.join(BASE_FOLDER, "ASSETS.DAT")) or os.path.exists(os.path.join(BASE_FOLDER, "STREAMS.DAT")):
@@ -647,7 +796,7 @@ def main():
             answer = input(f"{BLUE}The DAT files were decoded.{RESET} Do you want to continue? (Y/N): ").strip().lower()
             if answer != "y":
                 return
-    if not os.path.exists(MUSIC_FOLDER) or not os.path.exists(PLAY_FOLDER) or not os.path.exists(STRTBL_FOLDER):
+    if not music_input_folders() or not os.path.exists(PLAY_FOLDER) or not os.path.exists(STRTBL_FOLDER):
         print(f"\n{RED}There ain't shit to change! I need STREAMS and ASSETS. Either add them already decoded or in .DAT format.")
         return
     if not backup_created:
