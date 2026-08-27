@@ -68,6 +68,7 @@ FONT_TEMPLATE = {"name": "smallspace", "scale32": [1.0, 1.0], "scale8": [0, 0], 
 
 def create_backups():
     """Copy the decoded folders before the tool starts changing them."""
+    
     folders_to_backup = [
         ("ASSETS", os.path.join(BASE_FOLDER, "ASSETS")),
         ("STREAMS", os.path.join(BASE_FOLDER, "STREAMS")),
@@ -81,6 +82,7 @@ def create_backups():
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_path = os.path.join(BACKUP_FOLDER, timestamp)
+    print(f"{GREEN}Creating a backup at {backup_path}{RESET}")
     suffix = 1
     while os.path.exists(backup_path):
         backup_path = os.path.join(BACKUP_FOLDER, f"{timestamp}_{suffix}")
@@ -450,22 +452,18 @@ def convert_strtbl_to_json():
     if os.path.exists(STRTBL1_FILE) and not os.path.exists(STRTBL1_JSON):
         print(f"{YELLOW}Converting mcstrings01.strtbl → mcstrings01.json{RESET}")
         subprocess.run([sys.executable, os.path.join(TOOLS_FOLDER, "strtbl.py"), "dec", STRTBL1_FILE], check=True)
-        os.remove(STRTBL1_FILE)
 
     if os.path.exists(STRTBL2_FILE) and not os.path.exists(STRTBL2_JSON):
         print(f"{YELLOW}Converting mcstrings02.strtbl → mcstrings02.json{RESET}")
         subprocess.run([sys.executable, os.path.join(TOOLS_FOLDER, "strtbl.py"), "dec", STRTBL2_FILE], check=True)
-        os.remove(STRTBL2_FILE)
 
     if os.path.exists(STRTBL4_FILE) and not os.path.exists(STRTBL4_JSON):
         print(f"{YELLOW}Converting mcstrings04.strtbl → mcstrings04.json{RESET}")
         subprocess.run([sys.executable, os.path.join(TOOLS_FOLDER, "strtbl.py"), "dec", STRTBL4_FILE], check=True)
-        os.remove(STRTBL4_FILE)
 
     if os.path.exists(STRTBL8_FILE) and not os.path.exists(STRTBL8_JSON):
         print(f"{YELLOW}Converting mcstrings08.strtbl → mcstrings08.json{RESET}")
         subprocess.run([sys.executable, os.path.join(TOOLS_FOLDER, "strtbl.py"), "dec", STRTBL8_FILE], check=True)
-        os.remove(STRTBL8_FILE)
 
 # === 3. Load existing JSON (songs text entries) <- no the fuck they ain't just that but okay ===
 def load_song_dicts():
