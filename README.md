@@ -4,6 +4,21 @@
 
 The main entry point is the interactive [`tool.py`](tool.py) script. It is designed for a decoded MC3 asset tree, but it can also decode the two DAT archives first when they are placed beside the script.
 
+## HostFS usage
+
+If you are playing a HostFS version of the game, encoding or decoding `ASSETS.DAT` and `STREAMS.DAT` is not required. Use the decoded asset folders directly and place the complete `STREAMS/` folder inside `ASSETS/audio/`:
+
+```text
+ASSETS/
+├── audio/
+│   └── STREAMS/
+│       └── Music/
+│           └── <Genre>/
+└── ...
+```
+
+Put custom music in `ASSETS/audio/STREAMS/Music/<Genre>/`. The tool automatically discovers this layout, builds the new stream files there, and uses it when checking streams or rebuilding an archive. HostFS users can skip the DAT extraction and DAT rebuild prompts.
+
 ## Features
 
 - Decode `ASSETS.DAT` and `STREAMS.DAT` into `ASSETS/` and `STREAMS/`.
@@ -62,7 +77,7 @@ At least one usable music input folder, `ASSETS/tune/audio/playlist/`, and `ASSE
 
 ## Quick start
 
-1. Extract `ASSETS.DAT` and `STREAMS.DAT` from the game, or prepare already-decoded `ASSETS/` and `STREAMS/` folders.
+1. For a normal DAT-based game, extract `ASSETS.DAT` and `STREAMS.DAT` from the game, or prepare already-decoded `ASSETS/` and `STREAMS/` folders. For HostFS, skip DAT extraction and prepare `ASSETS/` with `STREAMS/` located at `ASSETS/audio/STREAMS/`.
 
 2. Put each new audio file in a genre folder under one of these locations:
 
@@ -112,7 +127,7 @@ At least one usable music input folder, `ASSETS/tune/audio/playlist/`, and `ASSE
 
 ### 1. Optional DAT extraction
 
-If `ASSETS.DAT` or `STREAMS.DAT` is present, the script first asks whether to decode them. It uses:
+If `ASSETS.DAT` or `STREAMS.DAT` is present, the script first asks whether to decode them. This step is optional and is not needed when playing through HostFS. It uses:
 
 - `dave.py` for `ASSETS.DAT` → `ASSETS/`.
 - `hash_build.py` for `STREAMS.DAT` → `STREAMS/`, using the bundled `external_tools/STREAMS.LST` name list, the `MClub` hash algorithm, and a 45% fallback matching threshold.
@@ -166,7 +181,7 @@ Before editing playlists, the tool scans every `.play` below `ASSETS/tune/audio/
 
 ### 6. Optional DAT rebuild
 
-If confirmed, the script creates:
+If confirmed, the script creates the DAT archives. This step is optional and is not needed when playing through HostFS.
 
 - `ASSETS.DAT` from `ASSETS/` using the DAVE builder with compact alignment, compressed names, and safe file compression.
 - `STREAMS.DAT` from `STREAMS/` or, when appropriate, `ASSETS/audio/STREAMS/` using the MC3 hash algorithm.
